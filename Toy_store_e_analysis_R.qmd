@@ -1,0 +1,268 @@
+---
+title: "Toy_Store_E -- Data Analysis"
+author: "Colten Wright"
+format: 
+  revealjs:
+    embed-resources: true
+    slide-number: true
+    smaller: true
+    footer: Toy_store_E Analysis
+---
+
+```{r}
+library(tidyverse)
+library(dplyr)
+library(DBI)
+library(RPostgres)
+library(lubridate)
+library(viridis)
+library(RColorBrewer)
+```
+
+```{r}
+connection <- dbConnect(
+  RPostgres::Postgres(),
+  dbname = "toy_stor_e",
+  host = "localhost",
+  port = 5432,
+  user = "**",
+  password = "***")
+```
+
+```{r}
+orders <- dbReadTable(connection, 'orders')
+order_items <- dbReadTable(connection, 'order_items')
+products <- dbReadTable(connection, 'products')
+order_item_refunds <- dbReadTable(connection, 'order_item_refunds')
+website_sessions <- dbReadTable(connection, 'website_sessions')
+```
+
+
+
+## Overview
+- Slides 3-5: Website Analysis
+- Slides 6-9: Advertisement/Campaign Analysis
+- Slides 10-13: Refund Analysis
+
+## What is the general trend of orders?
+```{r}
+## Line plot of number of orders over time
+
+
+# Query created in SQL 
+website_usage_and_orders <- dbGetQuery(connection, "
+SELECT
+EXTRACT(YEAR from created_at) AS year,
+EXTRACT(MONTH from created_at) AS month,
+COUNT(order_id) AS number_of_orders
+FROM orders
+GROUP BY EXTRACT(YEAR from created_at), Extract(MONTH from created_at)
+ORDER BY EXTRACT(YEAR from created_at), Extract(MONTH from created_at);
+")
+
+website_usage_and_orders %>%
+  mutate(date = make_date(year, month, 1)) %>%
+  ggplot(aes(x = date, y= number_of_orders))+
+  geom_line(color = 'darkblue')+
+  xlab('Date')+
+  ylab('Number of Orders')
+  
+```
+
+
+
+
+
+```{r,include=FALSE}
+## Regression of device type and whether there was an order or not
+joined_tables <- website_sessions %>%
+  left_join(orders, by = join_by(website_session_id)) %>%
+  mutate(completed_order = if_else(is.na(order_id), 0, 1))
+model <- glm(completed_order ~ device_type, data = joined_tables, family = binomial)
+
+summary(model)
+exp(coef(model))
+exp(confint(model))
+levels(as.factor(joined_tables$device_type))
+
+```
+
+## Does the Device Used Affect Order Rate?
+
+
+After Running a logistic regression model, it was found that:
+  
+::: {.incremental}
+
+  - P Value:  < .0001
+  - This means that the percentage of website usages that result in an order are significantly different between mobile users and computer users.
+  - It turns out that computer users have roughly  65.7% higher odds of completing an order than mobile users do!
+  
+:::
+
+
+## A Deeper Dive
+```{r}
+## Bar chart of device type and rate at which orders are made
+joined_tables %>%
+group_by(device_type) %>%
+  summarise(sessions = n(),
+            orders = sum(completed_order),
+            order_rate = mean(completed_order),
+            .groups = "drop") %>%
+  ggplot(aes(x = device_type, y= order_rate, fill = device_type))+
+  geom_col()+
+  scale_fill_brewer(palette = 'Dark2')+
+  scale_x_discrete(labels = c('Computer Orders', 'Mobile Orders'))+
+  xlab('Device Type')+
+  ylab('Rate of Orders')+
+  theme(legend.position = 'none')
+```
+
+
+# Advertisement
+
+## Which Campaign leads to the most Orders?
+```{r}
+## utm campaign with number of orders
+
+
+website_sessions %>%
+  left_join(orders, by = join_by(website_session_id)) %>%
+  group_by(month = floor_date(created_at.x, "month"), utm_campaign) %>%
+  summarise(order_percentage = sum(!is.na(order_id)) / n()) %>%
+  ungroup() %>%
+  ggplot(aes(x = month, y = order_percentage, colour = utm_campaign))+
+  geom_line()+
+  xlab('Date')+
+  ylab('Order Percentage')
+  
+
+
+```
+
+
+
+```{r, include=FALSE}
+## Regression of advertisement and whether there was an order or not
+model1 <- glm(completed_order ~ utm_content, data = joined_tables, family = binomial)
+summary(model1)
+exp(coef(model1))
+exp(confint(model1))
+levels(as.factor(joined_tables$utm_content))
+
+
+```
+## Which Advertisements Led to More Orders?
+
+
+After Running another logistic regression model, it was found that:
+
+
+::: {.incremental}
+
+  - P Value:  < .02 for all advertisements.
+  
+```{r, echo= TRUE}
+
+exp(confint(model1))
+```
+  - These confidence intervals show that:
+    - b_ad_2, g_ad_2, and No advertisement all have statistically significant evidence that they lead to more completed orders than the b_ad_1 does.
+    - g_ad_1, and both social ads have statistically significant evidence that they lead to less completed orders than the b_ad_1.
+  
+:::
+
+
+
+## Another Deeper Dive
+```{r}
+## Bar chart of advertisement and rate at which orders were made.
+
+joined_tables %>%
+  group_by(utm_content) %>%
+  summarise(orders = sum(completed_order),
+            order_rate = mean(completed_order),
+            .groups = 'drop') %>%
+  ggplot(aes(x = utm_content, y = order_rate, fill = utm_content))+
+  geom_col()+
+  scale_fill_brewer(palette = 'Set2')+
+  scale_x_discrete(labels = c('b_ad_1', 'b_ad_2', 'g_ad_1', 'g_ad_2', 'No Ad', 'social_ad_1', 'social_ad_2'))+
+  theme(legend.position = 'none')+
+  xlab('Advertisement')+
+  ylab('Order Rate')
+```
+
+
+# Refund Analysis
+
+## A general idea of Refunds
+```{r}
+##Plot of Refunds over time
+order_item_refunds %>%
+  mutate(month = floor_date(created_at, "month")) %>%
+  group_by(month) %>%
+  summarise(refunds = n(), .groups = "drop") %>%
+  ggplot(aes(x = month, y = refunds)) +
+  geom_line(color= 'darkblue') +
+  xlab("Date") +
+  ylab("Number of Refunds")
+
+
+```
+
+
+## Do larger Orders Result in Larger Refunds?
+```{r}
+## Scatter plot of order value and refund amount
+refund_by_order <- order_item_refunds %>%
+  group_by(order_id) %>%
+  summarise(
+    total_refund = sum(refund_amount_usd),
+    .groups = "drop")
+
+order_value_refund <- orders %>%
+  left_join(refund_by_order, by = "order_id") %>%
+  mutate(total_refund = replace_na(total_refund, 0))
+
+  ggplot(order_value_refund,
+       aes(x = price_usd, y = total_refund)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = TRUE) +
+  xlab("Order Value") +
+  ylab("Total Refund Amount")
+```
+
+
+## What does a typical order look like?
+```{r}
+## Density plot of order value
+orders %>%
+  ggplot(aes(x = price_usd))+
+  geom_density(linewidth = .75, color = 'darkblue')+
+  geom_vline(xintercept = median(orders$price_usd, na.rm = TRUE), linetype = "dashed")+
+  xlab('Price of Order')
+```
+
+
+
+# A Summary
+
+## Key Ideas
+
+::: {.incremental}
+
+  - The number of orders generally increased over the study period, with notable seasonal spikes around     the holiday season.
+  - Computer users had approximately 66% higher odds of completing an order than mobile users.
+  - Advertisement performance varied across individual advertisement types, with several advertisements     showing statistically different odds of order completion compared with the reference advertisement,     b_ad_1.
+  - b_ad_2 showed approximately 30% higher odds of order completion compared with b_ad_1.
+  - The social advertisements showed substantially lower odds of order completion compared with b_ad_1.
+  - The number of refunds generally increased over time, with a particularly large spike occurring in      September 2014
+
+
+
+
+
+
+
+
